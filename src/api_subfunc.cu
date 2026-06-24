@@ -23,7 +23,7 @@ extern "C" {
 
 #define SMALLVALUE 0.01
 #define NDIM 12
-cudaError_t cudaStatus;
+static thread_local cudaError_t cudaStatus;
 static cudaTextureObject_t h_tex = 0, h_tex2 = 0, h_tex16 = 0, h_tex2D1 = 0;
 #define cudaCheckErrors(msg) \
     do { \
@@ -1855,21 +1855,21 @@ template void alignsize3Dgpu<double>(double *d_odata, double *d_idata, long long
 
 // Registration variables: 2D
 static float *d_img2D = NULL;
-static float *h_aff2D;
-static long long int imx2D1, imy2D1, imx2D2, imy2D2;
-static float valueStatic2D;
-static int itNumStatic2D;
+static thread_local float *h_aff2D;
+static thread_local long long int imx2D1, imy2D1, imx2D2, imy2D2;
+static thread_local float valueStatic2D;
+static thread_local int itNumStatic2D;
 
 // Registration variables: 3D
-static float *d_imgStatic = NULL;
-static float valueStatic;
-static long long int sxStatic1, syStatic1, szStatic1, sxStatic2, syStatic2, szStatic2;
-static float *affCoef;
-static int itNumStatic, dofNum;
-static bool dof9Flag;
-static float *h_s3D = NULL, *h_t3D = NULL;
-static float *p, *p_dof9, *p2D;
-static cudaTextureObject_t textureStatic3D = 0;
+static thread_local float *d_imgStatic = NULL;
+static thread_local float valueStatic;
+static thread_local long long int sxStatic1, syStatic1, szStatic1, sxStatic2, syStatic2, szStatic2;
+static thread_local float *affCoef;
+static thread_local int itNumStatic, dofNum;
+static thread_local bool dof9Flag;
+static thread_local float *h_s3D = NULL, *h_t3D = NULL;
+static thread_local float *p, *p_dof9, *p2D;
+static thread_local cudaTextureObject_t textureStatic3D = 0;
 
 float costfunc2D(float *x) {
 	h_aff2D[0] = x[1], h_aff2D[1] = x[2], h_aff2D[2] = x[3];

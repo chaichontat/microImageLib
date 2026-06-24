@@ -253,8 +253,9 @@ void mnbrak(float *ax, float *bx, float *cx, float *fa, float *fb, float *fc,
 
 
 #define TOL 0.01 
-int ncom;
-float *pcom, *xicom, (*nrfunc)(float[]);
+static __thread int ncom;
+static __thread float *pcom, *xicom;
+static __thread float (*nrfunc)(float[]);
 
 // f1dim 
 float f1dim(float x)
