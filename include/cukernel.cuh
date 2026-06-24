@@ -25,14 +25,17 @@ typedef struct{
 
 #endif
 
-//template <class T>
-texture<float, 3, cudaReadModeElementType> tex, tex2; // declare texture
+__device__ cudaTextureObject_t tex, tex2; // declare texture objects
 
-texture<unsigned short, 3, cudaReadModeElementType> tex16; // declare texture
+__device__ cudaTextureObject_t tex16; // declare texture object
 
 __constant__ float d_aff[12]; // 3x4 Affine transform: constant array
 
-texture<float, 2, cudaReadModeElementType> tex2D1; // declare texture
+__device__ cudaTextureObject_t tex2D1; // declare texture object
+
+typedef struct {
+	float v[12];
+} Affine3D;
 
 // Utility class used to avoid linker errors with extern
 // unsized shared memory arrays with templated type
@@ -493,7 +496,7 @@ __global__ void accesstexturekernel(float x, float y, float z){
 	float xi = x + (float)threadIdx.x;
 	float yi = y + (float)threadIdx.y;
 	float zi = z + (float)threadIdx.z;
-	float testValue = tex3D(tex, xi, yi, zi);//by using this the error occurs
+	float testValue = tex3D<float>(tex, xi, yi, zi);//by using this the error occurs
 	printf("Coordinates: %f,%f,%f, value: %f\n", xi, yi, zi, testValue);
 }
 
@@ -514,10 +517,29 @@ __global__ void affinetransformkernel(T *d_t, long long int sx, long long int sy
 		// d_Stack[x*imy*imz + y*imz + z] = tex3D(tex, tx, ty, tz); //d_Stack[k][j][i] = tex3D[i][j][k]
 		if (tx >= 0 && tx < sx2 && ty >= 0 && ty < sy2 && tz >= 0 && tz < sz2){
 			if (sizeof(T) == 2)
-				d_t[x + y*sx + z*sx*sy] = tex3D(tex16, tx, ty, tz); // d_Stack[i][j][k] = tex3D[i][j][k], Target image in texture
+				d_t[x + y*sx + z*sx*sy] = tex3D<unsigned short>(tex16, tx, ty, tz); // d_Stack[i][j][k] = tex3D[i][j][k], Target image in texture
 			else
-				d_t[x + y*sx + z*sx*sy] = tex3D(tex, tx, ty, tz); // d_Stack[i][j][k] = tex3D[i][j][k], Target image in texture
+				d_t[x + y*sx + z*sx*sy] = tex3D<float>(tex, tx, ty, tz); // d_Stack[i][j][k] = tex3D[i][j][k], Target image in texture
 		}
+		else
+			d_t[x + y*sx + z*sx*sy] = 0;
+	}
+}
+
+__global__ void affinetransformkernel_tex(float *d_t, cudaTextureObject_t texObject, Affine3D aff, long long int sx, long long int sy, long long int sz,
+	long long int sx2, long long int sy2, long long int sz2) {
+	const long long int x = blockDim.x * blockIdx.x + threadIdx.x;
+	const long long int y = blockDim.y * blockIdx.y + threadIdx.y;
+	const long long int z = blockDim.z * blockIdx.z + threadIdx.z;
+	if (x < sx && y < sy && z < sz){
+		float ix = (float)x;
+		float iy = (float)y;
+		float iz = (float)z;
+		float tx = aff.v[0] * ix + aff.v[1] * iy + aff.v[2] * iz + aff.v[3] + 0.5;
+		float ty = aff.v[4] * ix + aff.v[5] * iy + aff.v[6] * iz + aff.v[7] + 0.5;
+		float tz = aff.v[8] * ix + aff.v[9] * iy + aff.v[10] * iz + aff.v[11] + 0.5;
+		if (tx >= 0 && tx < sx2 && ty >= 0 && ty < sy2 && tz >= 0 && tz < sz2)
+			d_t[x + y*sx + z*sx*sy] = tex3D<float>(texObject, tx, ty, tz);
 		else
 			d_t[x + y*sx + z*sx*sy] = 0;
 	}
@@ -543,10 +565,38 @@ __global__ void corrkernel(float *d_t, double *d_temp1, double *d_temp2, long lo
 			// s = tex3D(tex, tx, ty, tz); // source image in texture: d_s[i][j][k] = tex3D[i][j][k]
 			// * * * padding with zeros
 			if (tx>0 && tx < sx2 && ty>0 && ty < sy2 && tz>0 && tz < sz2)
-				s = tex3D(tex, tx, ty, tz); // source image in texture: d_s[i][j][k] = tex3D[i][j][k]
+				s = tex3D<float>(tex, tx, ty, tz); // source image in texture: d_s[i][j][k] = tex3D[i][j][k]
 			else
 				s = 0;
 			t = d_t[x + y*sx + z*sx*sy]; // target image
+			ss += (double)s*s;
+			st += (double)s*t;
+		}
+		d_temp1[x + y*sx] = ss;
+		d_temp2[x + y*sx] = st;
+	}
+}
+
+__global__ void corrkernel_tex(float *d_t, double *d_temp1, double *d_temp2, cudaTextureObject_t texObject, Affine3D aff, long long int sx,
+	long long int sy, long long int sz, long long int sx2, long long int sy2, long long int sz2) {
+	const long long int x = blockDim.x * blockIdx.x + threadIdx.x;
+	const long long int y = blockDim.y * blockIdx.y + threadIdx.y;
+	long long int z;
+	float t, s;
+	double ss = 0, st = 0;
+	if (x < sx && y < sy) {
+		for (z = 0; z < sz; z++) {
+			float ix = (float)x;
+			float iy = (float)y;
+			float iz = (float)z;
+			float tx = aff.v[0] * ix + aff.v[1] * iy + aff.v[2] * iz + aff.v[3] + 0.5;
+			float ty = aff.v[4] * ix + aff.v[5] * iy + aff.v[6] * iz + aff.v[7] + 0.5;
+			float tz = aff.v[8] * ix + aff.v[9] * iy + aff.v[10] * iz + aff.v[11] + 0.5;
+			if (tx > 0 && tx < sx2 && ty > 0 && ty < sy2 && tz > 0 && tz < sz2)
+				s = tex3D<float>(texObject, tx, ty, tz);
+			else
+				s = 0;
+			t = d_t[x + y*sx + z*sx*sy];
 			ss += (double)s*s;
 			st += (double)s*t;
 		}
@@ -565,7 +615,7 @@ __global__ void affineTransform2Dkernel(float *d_t, int sx, int sy, int sx2, int
 		float tx = d_aff[0] * ix + d_aff[1] * iy + d_aff[2] + 0.5;
 		float ty = d_aff[3] * ix + d_aff[4] * iy + d_aff[5] + 0.5;
 		if (tx>0 && tx < sx2 && ty>0 && ty < sy2)
-			d_t[x + y*sx] = tex2D(tex2D1, tx, ty);
+			d_t[x + y*sx] = tex2D<float>(tex2D1, tx, ty);
 		else
 			d_t[x + y*sx] = 0;
 		
@@ -586,7 +636,7 @@ __global__ void corr2Dkernel(float *d_s, float *d_sqr, float *d_corr, int sx, in
 		float ty = d_aff[3] * ix + d_aff[4] * iy + d_aff[5] + 0.5;
 		// texture interpolation
 		if (tx>0 && tx < sx2 && ty>0 && ty < sy2)
-			t = tex2D(tex2D1, tx, ty);
+			t = tex2D<float>(tex2D1, tx, ty);
 		else
 			t = 0;
 		s = d_s[x + y*sx];

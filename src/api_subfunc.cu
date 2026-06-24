@@ -24,6 +24,7 @@ extern "C" {
 #define SMALLVALUE 0.01
 #define NDIM 12
 cudaError_t cudaStatus;
+static cudaTextureObject_t h_tex = 0, h_tex2 = 0, h_tex16 = 0, h_tex2D1 = 0;
 #define cudaCheckErrors(msg) \
     do { \
         cudaStatus = cudaGetLastError(); \
@@ -881,55 +882,73 @@ cudacopydevicetoarray<unsigned short>(cudaArray *d_Array, cudaChannelFormatDesc 
 template void
 cudacopydevicetoarray<float>(cudaArray *d_Array, cudaChannelFormatDesc channelDesc, float *d_idata, size_t sx, size_t sy, size_t sz);
 
+cudaTextureObject_t createtextureobject(cudaArray *d_Array, int dimensions) {
+	cudaResourceDesc resDesc;
+	memset(&resDesc, 0, sizeof(resDesc));
+	resDesc.resType = cudaResourceTypeArray;
+	resDesc.res.array.array = d_Array;
+	cudaTextureDesc texDesc;
+	memset(&texDesc, 0, sizeof(texDesc));
+	texDesc.addressMode[0] = cudaAddressModeWrap;
+	texDesc.addressMode[1] = cudaAddressModeWrap;
+	texDesc.addressMode[2] = cudaAddressModeWrap;
+	texDesc.filterMode = cudaFilterModeLinear;
+	texDesc.readMode = cudaReadModeElementType;
+	texDesc.normalizedCoords = 0;
+	cudaTextureObject_t texObject = 0;
+	cudaCreateTextureObject(&texObject, &resDesc, &texDesc, NULL);
+	cudaThreadSynchronize();
+	return texObject;
+}
+
+static Affine3D makeaffine3d(const float *aff) {
+	Affine3D affine;
+	for (int i = 0; i < NDIM; i++) affine.v[i] = aff[i];
+	return affine;
+}
 
 extern "C" void BindTexture(cudaArray *d_Array, cudaChannelFormatDesc channelDesc){
-	// set texture parameters
-	tex.addressMode[0] = cudaAddressModeWrap;
-	tex.addressMode[1] = cudaAddressModeWrap;
-	tex.addressMode[2] = cudaAddressModeWrap;
-	tex.filterMode = cudaFilterModeLinear;
-	tex.normalized = false; //NB coordinates in [0,1]
-	// Bind the array to the texture
-	cudaBindTextureToArray(tex, d_Array, channelDesc);
-	cudaThreadSynchronize();
+	if (h_tex != 0) cudaDestroyTextureObject(h_tex);
+	h_tex = createtextureobject(d_Array, 3);
+	cudaMemcpyToSymbol(tex, &h_tex, sizeof(cudaTextureObject_t), 0, cudaMemcpyHostToDevice);
 }
 
 extern "C" void BindTexture2(cudaArray *d_Array, cudaChannelFormatDesc channelDesc) {
-	// set texture parameters
-	tex.addressMode[0] = cudaAddressModeWrap;
-	tex.addressMode[1] = cudaAddressModeWrap;
-	tex.addressMode[2] = cudaAddressModeWrap;
-	tex.filterMode = cudaFilterModeLinear;
-	tex.normalized = false; //NB coordinates in [0,1]
-							// Bind the array to the texture
-	cudaBindTextureToArray(tex2, d_Array, channelDesc);
-	cudaThreadSynchronize();
+	if (h_tex2 != 0) cudaDestroyTextureObject(h_tex2);
+	h_tex2 = createtextureobject(d_Array, 3);
+	cudaMemcpyToSymbol(tex2, &h_tex2, sizeof(cudaTextureObject_t), 0, cudaMemcpyHostToDevice);
 }
 
 extern "C" void BindTexture16(cudaArray *d_Array, cudaChannelFormatDesc channelDesc){
-	// set texture parameters
-	tex.addressMode[0] = cudaAddressModeWrap;
-	tex.addressMode[1] = cudaAddressModeWrap;
-	tex.addressMode[2] = cudaAddressModeWrap;
-	tex.filterMode = cudaFilterModeLinear;
-	tex.normalized = false; //NB coordinates in [0,1]
-	// Bind the array to the texture
-	cudaBindTextureToArray(tex16, d_Array, channelDesc);
-	cudaThreadSynchronize();
+	if (h_tex16 != 0) cudaDestroyTextureObject(h_tex16);
+	h_tex16 = createtextureobject(d_Array, 3);
+	cudaMemcpyToSymbol(tex16, &h_tex16, sizeof(cudaTextureObject_t), 0, cudaMemcpyHostToDevice);
 }
 
 extern "C" void UnbindTexture(){
-	cudaUnbindTexture(tex);
+	if (h_tex != 0) {
+		cudaDestroyTextureObject(h_tex);
+		h_tex = 0;
+		cudaMemcpyToSymbol(tex, &h_tex, sizeof(cudaTextureObject_t), 0, cudaMemcpyHostToDevice);
+	}
 	cudaThreadSynchronize();
 }
 
 extern "C" void UnbindTexture2() {
-	cudaUnbindTexture(tex2);
+	if (h_tex2 != 0) {
+		cudaDestroyTextureObject(h_tex2);
+		h_tex2 = 0;
+		cudaMemcpyToSymbol(tex2, &h_tex2, sizeof(cudaTextureObject_t), 0, cudaMemcpyHostToDevice);
+	}
 	cudaThreadSynchronize();
 }
 
 extern "C" void UnbindTexture16(){
-	cudaUnbindTexture(tex16);
+	if (h_tex16 != 0) {
+		cudaDestroyTextureObject(h_tex16);
+		h_tex16 = 0;
+		cudaMemcpyToSymbol(tex16, &h_tex16, sizeof(cudaTextureObject_t), 0, cudaMemcpyHostToDevice);
+	}
 	cudaThreadSynchronize();
 }
 
@@ -950,6 +969,14 @@ template void
 affineTransform<unsigned short>(unsigned short *d_s, long long int sx, long long int sy, long long int sz, long long int sx2, long long int sy2, long long int sz2);
 template void 
 affineTransform<float>(float *d_s, long long int sx, long long int sy, long long int sz, long long int sx2, long long int sy2, long long int sz2);
+
+void affineTransformWithTexture(float *d_s, cudaTextureObject_t texObject, const float *aff, long long int sx, long long int sy,
+	long long int sz, long long int sx2, long long int sy2, long long int sz2) {
+	dim3 threads(blockSize3Dx, blockSize3Dy, blockSize3Dz);
+	dim3 grid(iDivUp(sx, threads.x), iDivUp(sy, threads.y), iDivUp(sz, threads.z));
+	affinetransformkernel_tex<<<grid, threads >>>(d_s, texObject, makeaffine3d(aff), sx, sy, sz, sx2, sy2, sz2);
+	cudaThreadSynchronize();
+}
 
 float corrfunc(float *d_t, float sd_t, float *aff, long long int sx, 
 	long long int sy, long long int sz, long long int sx2, long long int sy2, long long int sz2){
@@ -987,20 +1014,51 @@ float corrfunc(float *d_t, float sd_t, float *aff, long long int sx,
 	return (float)(corrSum / sqrt(sqrSum)) / sd_t;
 }
 
-extern "C" void BindTexture2D(cudaArray *d_Array, cudaChannelFormatDesc channelDesc){
-	// set texture parameters
-	tex2D1.addressMode[0] = cudaAddressModeWrap;
-	tex2D1.addressMode[1] = cudaAddressModeWrap;
-	tex2D1.filterMode = cudaFilterModeLinear;
-	tex2D1.normalized = false;    // access with normalized texture coordinates
+float corrfuncWithTexture(float *d_t, float sd_t, float *aff, cudaTextureObject_t texObject, long long int sx,
+	long long int sy, long long int sz, long long int sx2, long long int sy2, long long int sz2) {
+	long long int sxy = sx * sy;
+	double *d_temp1 = NULL, *d_temp2 = NULL;
+	cudaMalloc((void **)&d_temp1, sxy * sizeof(double));
+	cudaMalloc((void **)&d_temp2, sxy * sizeof(double));
+	dim3 threads(blockSize2Dx, blockSize2Dy, 1);
+	dim3 grids(iDivUp(sx, threads.x), iDivUp(sy, threads.y));
+	corrkernel_tex<<<grids, threads>>>(d_t, d_temp1, d_temp2, texObject, makeaffine3d(aff), sx, sy, sz, sx2, sy2, sz2);
+	cudaThreadSynchronize();
+	double sqrSum = 0, corrSum = 0;
+	if (sxy > 100000){
+		sqrSum = sumgpu1D(d_temp1,  sxy);
+		corrSum = sumgpu1D(d_temp2, sxy);
+	}
+	else{
+		double *h_temp = NULL;
+		h_temp = (double *)malloc(sx*sy * sizeof(double));
+		cudaMemcpy(h_temp, d_temp1, sxy * sizeof(double), cudaMemcpyDeviceToHost);
+		for (int i = 0; i < sxy; i++)
+			sqrSum += h_temp[i];
+		cudaMemcpy(h_temp, d_temp2, sxy * sizeof(double), cudaMemcpyDeviceToHost);
+		for (int i = 0; i < sxy; i++)
+			corrSum += h_temp[i];
+		free(h_temp);
+	}
+	cudaFree(d_temp1);
+	cudaFree(d_temp2);
+	if (sqrt(sqrSum) == 0) return -2.0;
+	return (float)(corrSum / sqrt(sqrSum)) / sd_t;
+}
 
-	// Bind the array to the texture
-	cudaBindTextureToArray(tex2D1, d_Array, channelDesc);
+extern "C" void BindTexture2D(cudaArray *d_Array, cudaChannelFormatDesc channelDesc){
+	if (h_tex2D1 != 0) cudaDestroyTextureObject(h_tex2D1);
+	h_tex2D1 = createtextureobject(d_Array, 2);
+	cudaMemcpyToSymbol(tex2D1, &h_tex2D1, sizeof(cudaTextureObject_t), 0, cudaMemcpyHostToDevice);
 }
 
 extern "C" void UnbindTexture2D(
 	){
-	cudaUnbindTexture(tex2D1);
+	if (h_tex2D1 != 0) {
+		cudaDestroyTextureObject(h_tex2D1);
+		h_tex2D1 = 0;
+		cudaMemcpyToSymbol(tex2D1, &h_tex2D1, sizeof(cudaTextureObject_t), 0, cudaMemcpyHostToDevice);
+	}
 }
 
 extern "C"
@@ -1811,6 +1869,7 @@ static int itNumStatic, dofNum;
 static bool dof9Flag;
 static float *h_s3D = NULL, *h_t3D = NULL;
 static float *p, *p_dof9, *p2D;
+static cudaTextureObject_t textureStatic3D = 0;
 
 float costfunc2D(float *x) {
 	h_aff2D[0] = x[1], h_aff2D[1] = x[2], h_aff2D[2] = x[3];
@@ -2350,10 +2409,9 @@ int affinetrans3d1(float *d_odata, float *iTmx, float *d_idata, long long int sx
 	cudaThreadSynchronize();
 	cudaCheckErrors("****GPU array memory allocating fails... GPU out of memory !!!!*****\n");
 	cudacopydevicetoarray(d_ArrayTemp, channelDesc, d_idata, sx2, sy2, sz2);
-	BindTexture(d_ArrayTemp, channelDesc);
-	CopyTranMatrix(iTmx, NDIM * sizeof(float));
-	affineTransform(d_odata, sx, sy, sz, sx2, sy2, sz2);
-	UnbindTexture();
+	cudaTextureObject_t texObject = createtextureobject(d_ArrayTemp, 3);
+	affineTransformWithTexture(d_odata, texObject, iTmx, sx, sy, sz, sx2, sy2, sz2);
+	cudaDestroyTextureObject(texObject);
 	cudaFreeArray(d_ArrayTemp);
 	return 0;
 }
@@ -2366,10 +2424,9 @@ int affinetrans3d2(float *d_odata, float *iTmx, float *h_idata, long long int sx
 	cudaThreadSynchronize();
 	cudaCheckErrors("****GPU array memory allocating fails... GPU out of memory !!!!*****\n");
 	cudacopyhosttoarray(d_ArrayTemp, channelDesc, h_idata, sx2, sy2, sz2);
-	BindTexture(d_ArrayTemp, channelDesc);
-	CopyTranMatrix(iTmx, NDIM * sizeof(float));
-	affineTransform(d_odata, sx, sy, sz, sx2, sy2, sz2);
-	UnbindTexture();
+	cudaTextureObject_t texObject = createtextureobject(d_ArrayTemp, 3);
+	affineTransformWithTexture(d_odata, texObject, iTmx, sx, sy, sz, sx2, sy2, sz2);
+	cudaDestroyTextureObject(texObject);
 	cudaFreeArray(d_ArrayTemp);
 	return 0;
 }
@@ -2381,7 +2438,8 @@ float costfunc(float *x) {
 	else {
 		p2matrix(affCoef, x);
 	}
-	float costValue = corrfunc(d_imgStatic, valueStatic, affCoef, sxStatic1, syStatic1, szStatic1, sxStatic2, syStatic2, szStatic2);
+	float costValue = corrfuncWithTexture(d_imgStatic, valueStatic, affCoef, textureStatic3D,
+		sxStatic1, syStatic1, szStatic1, sxStatic2, syStatic2, szStatic2);
 
 	itNumStatic += 1;
 	return -costValue;
@@ -2870,7 +2928,8 @@ int reg3d_affine1(float *d_reg, float *iTmx, float *d_img1, float *d_img2, long 
 
 	// *** 3D registration begains
 	// Create 3D texture for source image
-	BindTexture(d_Array, channelDesc);
+	cudaTextureObject_t regTexture = createtextureobject(d_Array, 3);
+	textureStatic3D = regTexture;
 	// make target image as static
 	d_imgStatic = d_reg;
 	// calculate initial cost function value and time cost for each sub iteration
@@ -2959,7 +3018,8 @@ int reg3d_affine1(float *d_reg, float *iTmx, float *d_img1, float *d_img2, long 
 		matrixmultiply(affCoefTemp, iTmx, affCoef); //final transformation matrix
 		memcpy(affCoef, affCoefTemp, NDIM * sizeof(float));
 	}
-	UnbindTexture();
+	cudaDestroyTextureObject(regTexture);
+	textureStatic3D = 0;
 	memcpy(iTmx, affCoef, NDIM * sizeof(float));
 	ctime3 = clock();
 	records[3] = -fret; // negative of the mimized cost function value
@@ -2972,10 +3032,9 @@ int reg3d_affine1(float *d_reg, float *iTmx, float *d_img1, float *d_img2, long 
 	}
 	// ****Perform affine transformation with optimized coefficients****//
 	cudacopydevicetoarray(d_Array, channelDesc, d_img2, sx, sy, sz);
-	BindTexture(d_Array, channelDesc);
-	CopyTranMatrix(affCoef, NDIM * sizeof(float));
-	affineTransform(d_reg, sx, sy, sz, sx, sy, sz);
-	UnbindTexture();
+	regTexture = createtextureobject(d_Array, 3);
+	affineTransformWithTexture(d_reg, regTexture, affCoef, sx, sy, sz, sx, sy, sz);
+	cudaDestroyTextureObject(regTexture);
 	free(affCoefTemp);
 	free(p_dof9);
 	free_matrix(xi_dof9, 1, 9, 1, 9);
@@ -3137,7 +3196,8 @@ int reg3d_affine2(float *d_reg, float *iTmx, float *h_img1, float *h_img2, long 
 
 	// *** 3D registration begains
 	// Create 3D texture for source image
-	BindTexture(d_Array, channelDesc);
+	cudaTextureObject_t regTexture = createtextureobject(d_Array, 3);
+	textureStatic3D = regTexture;
 	// make target image as static
 	d_imgStatic = d_reg;
 	// calculate initial cost function value and time cost for each sub iteration
@@ -3226,7 +3286,8 @@ int reg3d_affine2(float *d_reg, float *iTmx, float *h_img1, float *h_img2, long 
 		matrixmultiply(affCoefTemp, iTmx, affCoef); //final transformation matrix
 		memcpy(affCoef, affCoefTemp, NDIM * sizeof(float));
 	}
-	UnbindTexture();
+	cudaDestroyTextureObject(regTexture);
+	textureStatic3D = 0;
 	memcpy(iTmx, affCoef, NDIM * sizeof(float));
 	ctime3 = clock();
 	records[3] = -fret; // negative of the mimized cost function value
@@ -3239,10 +3300,9 @@ int reg3d_affine2(float *d_reg, float *iTmx, float *h_img1, float *h_img2, long 
 	}
 	// ****Perform affine transformation with optimized coefficients****//
 	cudacopyhosttoarray(d_Array, channelDesc, h_img2, sx, sy, sz);
-	BindTexture(d_Array, channelDesc);
-	CopyTranMatrix(affCoef, NDIM * sizeof(float));
-	affineTransform(d_reg, sx, sy, sz, sx, sy, sz);
-	UnbindTexture();
+	regTexture = createtextureobject(d_Array, 3);
+	affineTransformWithTexture(d_reg, regTexture, affCoef, sx, sy, sz, sx, sy, sz);
+	cudaDestroyTextureObject(regTexture);
 	
 	free(h_imgTemp);
 
